@@ -169,11 +169,16 @@ def main() -> int:
                     # TTS.Monster model failed to produce reasonable audio output.
                     # Just delete the file, exiting loop with error not desirable.
                     # Add warn if the file is > 1KB per character?
-                    if os.path.getsize(file_fullpath) > 2048 * len(tts_text): # >2KB per character
+                    max_size: int = 2048 * len(tts_text) # 2KB per character max
+                    if len(tts_text) <= 5:
+                        max_size += 1024 * len(tts_text) # +1KB per character for very short text
+
+                    if os.path.getsize(file_fullpath) > max_size: # >2KB per character
                         print(f"Error: Output {file_fullpath} is too large: {os.path.getsize(file_fullpath)/1024}KB, "
-                              f"removing it.")
+                              f"removing it.\n")
                         os.remove(file_fullpath)
                         # implement a retry mechanism?
+                        continue
                         
             except (IOError, HTTPError, ReadTimeout) as e:
                 print(f"{type(e)}: {e}")
@@ -183,8 +188,8 @@ def main() -> int:
             return 1
 
         created_count += 1
-        if created_count > 1:
-            print("\033[1A", end="\x1b[2K")
+        #if created_count > 1:
+            #print("\033[1A", end="\x1b[2K")
         print(f"Created file {created_count}/~{len(template)-skipped_count}: {file_fullpath}. "
                 f"Used: {response['characterUsage']}/{ttsm_client.user_info['character_allowance']}c", flush=True)
 
