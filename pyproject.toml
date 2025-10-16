@@ -1,6 +1,6 @@
 [project]
 name = "ttsutil"
-version = "0.1.0"
+version = "0.2.0"
 description = "Utilities for creating, updating, and managing sets of Text-To-Speech files"
 authors = [
     {name = "cdr",email = "58159483+cdrg@users.noreply.github.com"}
@@ -13,9 +13,10 @@ dependencies = [
     "typed-ffmpeg (>=3.1.1,<4.0.0)",
     "requests (>=2.32.3,<3.0.0)",
     "ttsmapi @ git+https://github.com/cdrg/ttsmapi.git",
+    #"ttsmapi @ file:////home/cdr/projects/ttsmapi",
     "mypy-boto3-polly (>=1.40.13,<2.0.0)",
+    "mypy-boto3-service-quotas (>=1.40.48,<2.0.0)",
 ]
-
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

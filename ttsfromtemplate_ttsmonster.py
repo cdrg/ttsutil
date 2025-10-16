@@ -1,5 +1,4 @@
-"""
-Create a soundpack set of TTS mp3 files from a template json file using TTS.Monster.
+"""Update a soundpack voice set of TTS mp3 files from a template.json file using TTS.Monster.
 
 For safety, a "sounds" subdirectory must already exist in specified output directory.
 
@@ -20,74 +19,77 @@ tts_text: the actual text to be TTS read, in plain text;
 ssml_text: (optional) SSML marked up text, empty string if none
 """
 
-import sys
-import os
-import time
 import argparse
 import json
-from json import JSONDecodeError
+import os
+import sys
 import tempfile
+import time
+from json import JSONDecodeError
+from pathlib import Path
 
-import requests
-from requests.exceptions import HTTPError, ReadTimeout
 import ffmpeg
+import requests
 import ttsmapi
+from requests.exceptions import HTTPError, ReadTimeout
+from ttsmapi.enums import VoiceIdEnum
 from ttsmapi.exceptions import TTSMAPIError
+
 import ttsutil
 
-def main() -> int:
-    '''Create a soundpack set of TTS mp3 files from a template json file, using TTS.Monster.
+
+def ttsfromtemplate_ttsmonster(ttsmapi_client: ttsmapi.Client,
+                               voice: VoiceIdEnum | str,
+                               template_file: Path | None = None,
+                               output_dir: Path | None = None) -> int:
+    """Create a soundpack set of TTS mp3 files from a template JSON file, using TTS.Monster.
+
+    Args:
+        ttsmapi_client (ttsmapi.Client): An existing initialized TTS.Monster API client.
+        voice (VoiceIdEnum | str): TTS.Monster voice name or id to use. Names are only looked up for 
+            public voices. Private voices must be specified by UUID.
+        template_file (Path, optional): Path to the input JSON template file. Defaults to "template.json".
+        output_dir (Path, optional): the output directory containing a 'sounds' subdirectory to 
+            create the directory structure and tts files in. Defaults to current working directory.
 
     Returns:
-        (int): 0 on success, 1 on error
-    '''
+        int: 0 on success, 1 on error.
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("voiceid",
-                        help="TTS.Monster voice ID to use")
-    parser.add_argument("-f", "--file",
-                        help="the name of the input json template file",
-                        default="template.json")
-    parser.add_argument("-d", "--directory",
-                        help="the output directory containing a 'sounds' subdirectory "\
-                            "to create the directory structure and tts files in",
-                        default=os.getcwd())
-    args: argparse.Namespace = parser.parse_args()
+    """
+    template_file = template_file or Path("template.json")
+    output_dir = output_dir or Path.cwd()
 
-    sounds_directory = os.path.join(args.directory, "sounds")
+    sounds_dir: Path = output_dir / "sounds"
 
-    if not os.path.exists(args.file):
-        print(f"Error: template file '{args.file}' does not exist.")
+    if not template_file.exists() or not template_file.is_file():
+        print(f"Error: template file '{template_file}' does not exist.")
         return 1
-    if not os.path.exists(args.directory):
-        print(f"Error: output directory '{args.directory}' does not exist.")
+    if not output_dir.exists() or not output_dir.is_dir():
+        print(f"Error: output directory '{output_dir}' does not exist.")
         return 1
-    if not os.path.exists(sounds_directory):
-        print(f"Error: required subdirectory '{sounds_directory}' does not exist.")
+    if not sounds_dir.exists() or not sounds_dir.is_dir():
+        print(f"Error: required subdirectory '{sounds_dir}' does not exist.")
         return 1
 
-    with open(args.file, encoding="utf-8") as f:
+    if isinstance(voice, str) and voice.upper() in VoiceIdEnum._member_names_:
+        voiceid = str(VoiceIdEnum[voice.upper()].value)
+    elif voice in VoiceIdEnum:
+        voiceid = str(voice)
+    else:
+        print(f"Warning: Specified voice name or ID '{voice}' does not match any public voice.")
+        print("   Proceeding with the assumption that it's a private voice ID.")
+        voiceid = str(voice)
+
+    with open(template_file, encoding="utf-8") as f:
         try:
-            template: list[dict[str, str]] = json.load(f)
+            template_data: list[dict[str, str]] = json.load(f)
         except (JSONDecodeError, UnicodeDecodeError) as e:
             print(f"{type(e)}: {e}")
             return 1
 
-    try: 
-       ttsm_apikey: str = os.environ['TTSMONSTER_API_KEY']
-    except KeyError as e:
-        print(f"{type(e)}: {e}")
-        return 1
-
-    try:
-        ttsm_client: ttsmapi.Client = ttsmapi.Client(ttsm_apikey)
-    except (TTSMAPIError, HTTPError) as e:
-        print(f"{type(e)}: {e}")
-        return 1
-    
-    print(f"TTS.Monster API client initialized. Current plan: \"{ttsm_client.user_info['current_plan']}\", "
-          f"Characters used: {ttsm_client.user_info['character_usage']} / "
-          f"Character allowance: {ttsm_client.user_info['character_allowance']}")   
+    print(f"TTS.Monster API client ready: Current plan: '{ttsmapi_client.user_info['current_plan']}', "
+          f"Characters used: {ttsmapi_client.user_info['character_usage']} / "
+          f"Character allowance: {ttsmapi_client.user_info['character_allowance']}")   
 
     created_count: int = 0
     skipped_count: int = 0
@@ -95,33 +97,36 @@ def main() -> int:
 
     # For each template entry that doesn't already exist as a file, call TTS.Monster API to create a TTS file, 
     # then retrieve the TTS file from the URL returned by the API.
-    item: dict[str, str]
-    for item in template:
-        file_partialpath: str = item["path"]
+    for item in template_data:
+        file_partialpath: Path = Path(item["path"])
         tts_text: str = item["tts_text"]
         ssml_text: str = item["ssml_text"] # TTS.Monster does not support SSML, but we may simulate some features
 
-        file_fullpath: str = os.path.join(sounds_directory, file_partialpath)
+        file_fullpath: Path = sounds_dir / file_partialpath
         # skip if file already exists
-        if os.path.exists(file_fullpath):
+        if file_fullpath.exists():
             skipped_count += 1
             continue
 
         # need to create output directory (and intermediates) if they don't exist
-        if not os.path.exists(os.path.dirname(file_fullpath)):
-            os.makedirs(os.path.dirname(file_fullpath), mode=0o755, exist_ok=True)
+        if not file_fullpath.parent.exists():
+            file_fullpath.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
 
         #print(f"Sent Generate(voice_id={args.voiceid}, message={tts_text})...")
         start_time: float = time.perf_counter()
 
         try:
-            response: dict = ttsm_client.generate(voice_id=args.voiceid, message=tts_text)
-        except (TTSMAPIError, HTTPError, ReadTimeout) as e:
+            response: dict = ttsmapi_client.generate(voice_id=voiceid, message=tts_text)
+        except (ConnectionError, ReadTimeout) as e:
+            # On ConnectionError or ReadTimeout, assume TTS.Monster is flaky, just continue to next item
+            print(f"{type(e)}: {e}")
+            continue
+        except (TTSMAPIError, HTTPError) as e:
             print(f"{type(e)}: {e}")
             print(f"Template item: {item}")
-            print(f"Call: generate({args.voiceid}, {tts_text})")
+            print(f"Call: generate('{voice}', '{tts_text}')")
             return 1
-        
+
         #print(f"Generate() completed in {time.perf_counter() - start_time:.2f}s")
         total_elapsed += time.perf_counter() - start_time
 
@@ -130,7 +135,7 @@ def main() -> int:
             # the need to do two-pass ffmpeg processing. Otherwise ffmpeg could get the file itself.
             try:
                 url_response: requests.Response = requests.get(response["url"])
-                with tempfile.NamedTemporaryFile(suffix=os.path.splitext(response["url"])[1]) as f:
+                with tempfile.NamedTemporaryFile(suffix=Path(response["url"]).suffix) as f:
                     f.write(url_response.content)
                     try:
                         max_volume: float = ttsutil.get_max_volume(f.name)
@@ -165,7 +170,7 @@ def main() -> int:
                     # Lastly, set the output file and run ffmpeg.
                     input_stream.output(filename=file_fullpath).run(quiet=True)
 
-                    #TODO: Reject the file if it's too long/too large since that indicates the 
+                    # Reject the file if it's too long/too large since that indicates the 
                     # TTS.Monster model failed to produce reasonable audio output.
                     # Just delete the file, exiting loop with error not desirable.
                     # Add warn if the file is > 1KB per character?
@@ -173,14 +178,16 @@ def main() -> int:
                     if len(tts_text) <= 5:
                         max_size += 1024 * len(tts_text) # +1KB per character for very short text
 
-                    if os.path.getsize(file_fullpath) > max_size: # >2KB per character
-                        print(f"Error: Output {file_fullpath} is too large: {os.path.getsize(file_fullpath)/1024}KB, "
-                              f"removing it.\n")
-                        os.remove(file_fullpath)
+                    if file_fullpath.stat().st_size > max_size:
+                        print(
+                            f"Error: Output {file_fullpath} is too large: {file_fullpath.stat().st_size // 1024}KB, "
+                            f"removing it.\n"
+                        )
+                        file_fullpath.unlink()
                         # implement a retry mechanism?
                         continue
-                        
-            except (IOError, HTTPError, ReadTimeout) as e:
+
+            except (OSError, HTTPError, ReadTimeout) as e:
                 print(f"{type(e)}: {e}")
                 return 1
         else:
@@ -188,14 +195,51 @@ def main() -> int:
             return 1
 
         created_count += 1
-        #if created_count > 1:
-            #print("\033[1A", end="\x1b[2K")
-        print(f"Created file {created_count}/~{len(template)-skipped_count}: {file_fullpath}. "
-                f"Used: {response['characterUsage']}/{ttsm_client.user_info['character_allowance']}c", flush=True)
+        # if created_count > 1:
+        #    print("\033[1A", end="\x1b[2K")
+        print(f"Created file {created_count}/~{len(template_data)-created_count-skipped_count+1}: {file_fullpath}. "
+                f"Used: {response['characterUsage']}/{ttsmapi_client.user_info['character_allowance']}c", flush=True)
 
     print(f"Successfully finished. {created_count} file(s) created and {skipped_count} "
-          f"existing file(s) skipped in {time.strftime('%Mm:%Ss', time.gmtime(total_elapsed))}.")
+          f"existing file(s) skipped in {time.strftime('%Mm:%Ss', time.gmtime(total_elapsed))}. "
+          f"{created_count+skipped_count} total.")
     return 0
+
+def main() -> int:
+    """Command-line entry point for ttsfromtemplate_ttsmonster.
+
+    Returns:
+        int: 0 on success, 1 on error
+
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("voiceid",
+                        help="TTS.Monster voice name or voice ID to use")
+    parser.add_argument("-f", "--file",
+                        help="the name of the input json template file",
+                        default="template.json")
+    parser.add_argument("-d", "--directory",
+                        help="the output directory containing a 'sounds' subdirectory "\
+                            "to create the directory structure and tts files in",
+                        default=os.getcwd())
+    args: argparse.Namespace = parser.parse_args()
+
+    try: 
+        ttsm_apikey: str = os.environ['TTSMONSTER_API_KEY']
+    except KeyError as e:
+        print(f"{type(e)}: {e}")
+        return 1
+
+    try:
+        ttsmapi_client: ttsmapi.Client = ttsmapi.Client(ttsm_apikey)
+    except (TTSMAPIError, HTTPError) as e:
+        print(f"{type(e)}: {e}")
+        return 1
+
+    return ttsfromtemplate_ttsmonster(ttsmapi_client=ttsmapi_client,
+                                      voice=args.voiceid,
+                                      template_file=Path(args.file),
+                                      output_dir=Path(args.directory))
 
 if __name__ == "__main__":
     sys.exit(main())

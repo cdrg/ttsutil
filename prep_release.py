@@ -1,26 +1,25 @@
-"""
-Make .zip files of TTS soundpack directories for uploading with a github release.
-"""
+"""Create release assets such as .zip files of TTS voice soundpack directories + audio preview files."""
 
-import os
-import sys
 import argparse
-import shutil
-
 import json
+import os
+import shutil
+import sys
+
 import ffmpeg
 
+
 def main():
-    '''
-    Make .zip files of TTS soundpack directories for uploading with a github release.
+    """Make .zip files of TTS soundpack directories for uploading with a github release.
 
-    TODO: First, verify all soundpack dirs versus the template file?
+    Also create other release assets such as preview audio files (in video containers).
 
-    Warning: Existing .zip files with the same name in the output directory will be overwritten.
+    Warning: Existing files with the same name in the output directory will be overwritten.
 
     Returns:
         (int): 0 on success, 1 on error
-    '''
+
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--inputdir", help="the input directory containing soundpack dirs", 
                         default=os.getcwd())
@@ -33,10 +32,10 @@ def main():
     if not os.path.exists(args.inputdir):
         print(f"Error: input directory '{args.inputdir}' does not exist.")
         return 1
-    
+
     if not os.path.exists(args.outputdir):
         os.makedirs(args.outputdir, mode=0o755, exist_ok=True)
-    
+
     with open(args.file, encoding="utf-8") as f:
         try:
             template: list[dict[str, str]] = json.load(f)
@@ -47,7 +46,7 @@ def main():
     soundpackdirs: list[str] = [name for name in os.listdir(args.inputdir) 
                                 if os.path.isdir(os.path.join(args.inputdir, name)) 
                                 and os.path.isdir(os.path.join(args.inputdir, name, "sounds"))]
-    
+
     # Check if all files in the template exist in each soundpack directory
     missing_file: bool = False
     for soundpackdir in soundpackdirs:
@@ -74,13 +73,11 @@ def main():
         for root, _, files in os.walk(soundpackdir_path, topdown=False):
             for filename in files:
                 # skip non-.mp3 files
-                if not filename.endswith(".mp3"):
-                    continue
                 # skip files in voicelines dir since they're not TTS files
-                elif "voicelines" in root:
-                    continue
                 # skip quest_item.mp3 since it's not a TTS file
-                elif filename == "quest item.mp3":
+                if (not filename.endswith(".mp3") 
+                    or "voicelines" in root
+                    or filename == "quest item.mp3"):
                     continue
 
                 # get path relative to sounds dir, remove leading path separator if present
@@ -101,7 +98,7 @@ def main():
     # Generate release files
     for soundpackdir in soundpackdirs:
         soundpackdir_path: str = os.path.join(args.inputdir, soundpackdir)
-       
+
         zip_path: str = os.path.join(args.outputdir, soundpackdir)
 
         # Make a zip file of the soundpack directory
@@ -116,5 +113,6 @@ def main():
 
         print(f"Created zip '{zip_path}'.zip and preview '{preview_output_path}' from soundpack "
               f"dir '{soundpackdir_path}'")
+
 if __name__ == "__main__":
     sys.exit(main())

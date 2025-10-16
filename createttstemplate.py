@@ -1,5 +1,4 @@
-"""
-Create or update a json TTS audio file list template with default entries from an existing TTS directory.
+"""Create or update a json TTS audio file list template with default entries from an existing TTS directory.
 
 Template file entires can be improved by hand as necessary after creation of defaults.
 
@@ -14,20 +13,23 @@ tts_text: the actual text to be TTS read, in plain text;
 ssml_text: (optional) SSML marked up text, empty string if none
 """
 
-import sys
-import os
 import argparse
 import json
+import os
 import re
+import sys
+
 
 def main():
-    '''
-    Create a json TTS audio file list template with default entries from files in an existing TTS 
+    """Create or update a TTS template json file from an existing TTS directory.
+
+    Create a json TTS audio file list template with default entries from files in an existing TTS
     directory, or update an existing template file with new entries from new files.
 
     Returns:
         (int): 0 on success, 1 on error
-    '''
+
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--directory", help="the input directory to crawl", default=os.getcwd())
     parser.add_argument("-f", "--file", help="the name of the output template json file", default="template.json")
@@ -55,10 +57,9 @@ def main():
     for root, _, files in os.walk(args.directory, topdown=False):
         for filename in files:
             # skip non-.mp3 files
-            if not filename.endswith(".mp3"):
-                continue
             # skip files in voicelines dir since they're not TTS files
-            elif "voicelines" in root:
+            if (not filename.endswith(".mp3") 
+                or "voicelines" in root):
                 continue
 
             # get path relative to sounds dir, remove leading path separator if present
@@ -128,7 +129,7 @@ def main():
     try:
         with open(args.file, "w", encoding="utf-8") as f:
             f.write(template_json)
-    except IOError as e:
+    except OSError as e:
         print(f"{type(e)}: {e}")
         return 1
 
