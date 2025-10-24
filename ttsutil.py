@@ -2,6 +2,7 @@
 
 import os
 import re
+from pathlib import Path
 
 import ffmpeg
 
@@ -25,24 +26,25 @@ def get_max_volume(filepath: str) -> float:
         ValueError: If max_volume could not be found in ffmpeg output.
 
     """
-    if filepath.endswith(".pcm"): 
+    if filepath.endswith(".pcm"):
         # pcm files have no container with metadata, so we need to specify rate, channels, and format
         # Polly PCM output is 16000Hz, 1-channel, 16-bit signed little-endian
         input_stream: ffmpeg.AudioStream = ffmpeg.input(filepath, ar=16000, ac=1, f="s16le")
     else:
         input_stream: ffmpeg.AudioStream = ffmpeg.input(filepath)
 
-    output_stream: ffmpeg.dag.OutputStream = input_stream.volumedetect().output(
-                                                                    filename=os.devnull, f="null")
+    output_stream: ffmpeg.dag.OutputStream = input_stream.volumedetect().output(filename=os.devnull, f="null")
     # for some reason the output is in stderr instead of stdout
-    stderr: str = output_stream.run(capture_stderr=True)[1].decode('utf-8')
+    stderr: str = output_stream.run(capture_stderr=True)[1].decode("utf-8")
 
-    max_volume_match: re.Match[str]|None = re.search(r"max_volume:\s*(-?\d+(\.\d+)?) dB", stderr)
-    if max_volume_match:
-        max_volume: float = float(max_volume_match.group(1))
-        return max_volume
-    else:
-        raise ValueError("Could not find max_volume in ffmpeg output.")
+    max_volume_match: re.Match[str] | None = re.search(r"max_volume:\s*(-?\d+(\.\d+)?) dB", stderr)
+    if not max_volume_match:
+        msg = "Could not find max_volume in ffmpeg output."
+        raise ValueError(msg)
+
+    max_volume: float = float(max_volume_match.group(1))
+    return max_volume
+
 
 def trim_silence(filepath: str, silence_threshold: float = -30.0, min_silence_duration: float = 0.2) -> str:
     """Trim silence from the beginning and end of an audio file using ffmpeg silenceremove filter.
@@ -58,24 +60,27 @@ def trim_silence(filepath: str, silence_threshold: float = -30.0, min_silence_du
         str: Path to the trimmed audio file.
 
     """
-    output_filepath: str = os.path.splitext(filepath)[0] + "_trimmed" + os.path.splitext(filepath)[1]
+    p = Path(filepath)
+    output_filepath: str = str(p.with_name(p.stem + "_trimmed" + p.suffix))
 
-    #ffmpeg -i input.mp3 -af "
+    # ffmpeg -i input.mp3 -af "
     # silenceremove=start_periods=1:start_duration=1:start_threshold=-30dB:detection=peak,
-    # aformat=dblp,
+    # aformat=dblp,  # noqa: ERA001
     # areverse,
     # silenceremove=start_periods=1:start_duration=1:start_threshold=-30dB:detection=peak,
-    # aformat=dblp,
+    # aformat=dblp,  # noqa: ERA001
     # areverse" output.mp3
 
     input_stream: ffmpeg.AudioStream = ffmpeg.input(filepath)
-    input_stream = input_stream.silenceremove(start_periods=1, start_duration=min_silence_duration,
-                                              start_threshold=silence_threshold, detection='peak')
-    input_stream = input_stream.aformat(sample_fmts='dblp')
+    input_stream = input_stream.silenceremove(
+        start_periods=1, start_duration=min_silence_duration, start_threshold=silence_threshold, detection="peak"
+    )
+    input_stream = input_stream.aformat(sample_fmts="dblp")
     input_stream = input_stream.areverse()
-    input_stream = input_stream.silenceremove(start_periods=1, start_duration=min_silence_duration,
-                                              start_threshold=silence_threshold, detection='peak')
-    input_stream = input_stream.aformat(sample_fmts='dblp')
+    input_stream = input_stream.silenceremove(
+        start_periods=1, start_duration=min_silence_duration, start_threshold=silence_threshold, detection="peak"
+    )
+    input_stream = input_stream.aformat(sample_fmts="dblp")
     input_stream = input_stream.areverse()
 
     input_stream.output(filename=output_filepath).run(quiet=True)
