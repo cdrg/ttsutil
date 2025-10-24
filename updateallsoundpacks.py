@@ -13,7 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, Literal
 
 import ttsmapi
 from boto3 import Session
@@ -26,13 +26,48 @@ from ttsmapi.exceptions import TTSMAPIError
 
 import ttsfromtemplate_awspolly
 import ttsfromtemplate_ttsmonster
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mypy_boto3_polly.client import PollyClient
     # from mypy_boto3_service_quotas.client import ServiceQuotasClient
 
 
-def update_all_soundpacks(template_file: Path | None = None, base_dir: Path | None = None) -> int:
+def _count_missing_for_service(
+    base_dir: Path, template_data: list[dict], dir_prefix: str, *, log_missing: bool = False
+) -> tuple[list[Path], int, int]:
+    """Return (dirs, num_missing_files, num_missing_chars) for soundpacks matching prefix.
+
+    Args:
+        base_dir (Path): parent directory containing soundpack directories
+        template_data (list[dict]): loaded template data
+        dir_prefix (str): lower-case prefix to match directory names (e.g. 'awspolly-')
+        log_missing (bool): if True, log each missing file path. Default False.
+
+    Returns:
+        tuple[list[Path], int, int]: (list of matching dirs, number of missing files, number of missing TTS characters)
+
+    """
+    dirs: list[Path] = [d for d in base_dir.iterdir() if d.is_dir() and d.name.lower().startswith(dir_prefix)]
+    num_missing_files = 0
+    num_missing_chars = 0
+    for pack_dir in dirs:
+        for item in template_data:
+            file_fullpath: Path = pack_dir / "sounds" / item["path"]
+            if not file_fullpath.exists():
+                num_missing_files += 1
+                num_missing_chars += len(item.get("tts_text", ""))
+                if log_missing:
+                    logger.info("Missing: %s", file_fullpath)
+    return dirs, num_missing_files, num_missing_chars
+
+
+def update_all_soundpacks(
+    template_file: Path | None = None, base_dir: Path | None = None, *, log_missing: bool = False
+) -> int:
     """Update all soundpack folders in the specified directory using the specified TTS template file.
 
     Args:
@@ -40,6 +75,7 @@ def update_all_soundpacks(template_file: Path | None = None, base_dir: Path | No
             Defaults to "template.json".
         base_dir (Path, optional): Directory containing soundpack subdirectories.
             Defaults to current working directory.
+        log_missing (bool, optional): If True, log each missing TTS file path. Default False.
 
     Returns:
         int: 0 on success, 1 on error
@@ -49,111 +85,96 @@ def update_all_soundpacks(template_file: Path | None = None, base_dir: Path | No
     base_dir = base_dir or Path.cwd()
 
     if not template_file.exists():
-        print(f"Error: template file '{template_file}' does not exist.")
+        logger.error("Error: template file '%s' does not exist.", template_file)
         return 1
 
     if not base_dir.exists() or not base_dir.is_dir():
-        print(f"Error: specified directory '{base_dir}' does not exist or is not a directory.")
+        logger.error("Error: specified directory '%s' does not exist or is not a directory.", base_dir)
         return 1
 
     try:
         with template_file.open(encoding="utf-8") as f:
             template_data = json.load(f)
-    except (JSONDecodeError, UnicodeDecodeError) as e:
-        print(f"Error reading template: {e}")
+    except (JSONDecodeError, UnicodeDecodeError):
+        logger.exception("Error reading template")
         return 1
 
     # Calculate the total number of characters of 'tts_text' for missing files in all awspolly soundpacks
-    awspolly_missing_files: int = 0
-    awspolly_missing_chars: int = 0
-    awspolly_dirs: list[Path] = [d for d in base_dir.iterdir() if d.is_dir() and d.name.lower().startswith("awspolly-")]
-    if awspolly_dirs:
-        for awspolly_dir in awspolly_dirs:
-            for item in template_data:
-                file_fullpath: Path = awspolly_dir / "sounds" / item["path"]
+    awspolly_dirs, awspolly_num_missing_files, awspolly_num_missing_chars = _count_missing_for_service(
+        base_dir=base_dir, template_data=template_data, dir_prefix="awspolly-", log_missing=log_missing
+    )
+    if awspolly_num_missing_files > 0:
+        try:
+            aws_profile: str = os.environ["AWS_PROFILE"]
+        except KeyError:
+            logger.exception("AWS_PROFILE not set in environment")
+            return 1
 
-                if not file_fullpath.exists():
-                    awspolly_missing_files += 1
-                    awspolly_missing_chars += len(item["tts_text"])
+        try:
+            polly_client: PollyClient = Session(profile_name=aws_profile).client("polly")  # type: ignore[attr-defined]
+        except (ClientError, NoCredentialsError):
+            logger.exception("Failed to initialize AWS Polly client")
+            return 1
 
-        if awspolly_missing_files > 0:
-            try:
-                aws_profile: str = os.environ["AWS_PROFILE"]
-            except KeyError as e:
-                print(f"{type(e)}: {e}")
-                return 1
+        # TODO(cdr): Figure out how to actually get the SynthesizeSpeech quota(s) from AWS Polly
+        # service_quotas_client: ServiceQuotasClient = Session(profile_name=aws_profile).client('service-quotas')  # type: ignore[attr-defined]
+        # service_quotas: ListServiceQuotasResponseTypeDef = service_quotas_client.list_service_quotas(ServiceCode='polly')
+        # synthesize_speech_quota = next((quota for quota in service_quotas['Quotas'] if quota['QuotaName'] == "SynthesizeSpeech"), None)  # type: ignore
 
-            try:
-                polly_client: PollyClient = Session(profile_name=aws_profile).client("polly")  # type: ignore
-            except (ClientError, NoCredentialsError) as e:
-                print(f"{type(e)}: {e}")
-                return 1
-
-            # TODO: Figure out how to actually get the SynthesizeSpeech quota(s) from AWS Polly
-            # service_quotas_client: ServiceQuotasClient = Session(profile_name=aws_profile).client('service-quotas') #type: ignore
-            # service_quotas: ListServiceQuotasResponseTypeDef = service_quotas_client.list_service_quotas(ServiceCode='polly')
-            # synthesize_speech_quota = next((quota for quota in service_quotas['Quotas'] if quota['QuotaName'] == "SynthesizeSpeech"), None) # type: ignore
-
-            # print(f"AWS Polly account has {synthesize_speech_quota} characters remaining in this billing period.")
+        # logger.info("AWS Polly account has %s characters remaining in this billing period.", synthesize_speech_quota)
 
     # Calculate the total number of characters of 'tts_text' for missing files in all TTSM soundpacks
-    ttsm_missing_files: int = 0
-    ttsm_missing_chars: int = 0
-    ttsm_dirs: list[Path] = [d for d in base_dir.iterdir() if d.is_dir() and d.name.lower().startswith("ttsm-")]
-    if ttsm_dirs:
-        for ttsm_dir in ttsm_dirs:
-            for item in template_data:
-                file_fullpath: Path = ttsm_dir / "sounds" / item["path"]
-
-                if not file_fullpath.exists():
-                    ttsm_missing_files += 1
-                    ttsm_missing_chars += len(item["tts_text"])
-
-        if ttsm_missing_files > 0:
-            try:
-                ttsm_apikey: str = os.environ["TTSMONSTER_API_KEY"]
-            except KeyError as e:
-                print(f"{type(e)}: {e}")
-                return 1
-
-            try:
-                ttsmapi_client: ttsmapi.Client = ttsmapi.Client(ttsm_apikey)
-            except (TTSMAPIError, HTTPError) as e:
-                print(f"{type(e)}: {e}")
-                return 1
-
-            ttsm_remaining_chars: int = (
-                ttsmapi_client.user_info["character_allowance"] - ttsmapi_client.user_info["character_usage"]
-            )
-            print(f"TTSM account has {ttsm_remaining_chars} characters remaining in this billing period.")
-
-    print(
-        f"AWSPolly soundpacks are missing {awspolly_missing_files} files with a total of "
-        f"{awspolly_missing_chars} TTS characters."
+    ttsm_dirs, ttsm_num_missing_files, ttsm_num_missing_chars = _count_missing_for_service(
+        base_dir=base_dir, template_data=template_data, dir_prefix="ttsm-", log_missing=log_missing
     )
-    print(
-        f"TTSM soundpacks are missing {ttsm_missing_files} files with a total of {ttsm_missing_chars} TTS characters."
+    if ttsm_num_missing_files > 0:
+        try:
+            ttsm_apikey: str = os.environ["TTSMONSTER_API_KEY"]
+        except KeyError:
+            logger.exception("TTSMONSTER_API_KEY not set in environment")
+            return 1
+
+        try:
+            ttsmapi_client: ttsmapi.Client = ttsmapi.Client(ttsm_apikey)
+        except (TTSMAPIError, HTTPError):
+            logger.exception("Failed to initialize TTS.Monster API client")
+            return 1
+
+        ttsm_remaining_chars: int = (
+            ttsmapi_client.user_info["character_allowance"] - ttsmapi_client.user_info["character_usage"]
+        )
+        logger.info("TTSM account has %d characters remaining in this billing period.", ttsm_remaining_chars)
+
+    logger.info(
+        "AWSPolly soundpacks are missing %d files with a total of %d TTS characters.",
+        awspolly_num_missing_files,
+        awspolly_num_missing_chars,
+    )
+    logger.info(
+        "TTSM soundpacks are missing %d files with a total of %d TTS characters.",
+        ttsm_num_missing_files,
+        ttsm_num_missing_chars,
     )
 
-    if ttsm_missing_files > 0 or awspolly_missing_files > 0:
-        print("You are responsible for any TTS generation fees incurred. Proceed? (y/n): ", end="")
-        if input().strip().lower() != "y":
-            print("'n' selected, exiting.")
+    if ttsm_num_missing_files > 0 or awspolly_num_missing_files > 0:
+        prompt = "You are responsible for any TTS generation fees incurred. Proceed? (y/n): "
+        if input(prompt).strip().lower() != "y":
+            print("'n' selected, exiting.")  # noqa: T201
             return 0
     else:
-        print("No missing TTS files detected in any soundpack dir, exiting.")
+        logger.info("No TTS files specified in template are missing in any soundpack dir, exiting.")
         return 0
 
-    print(f"Using template file '{template_file}' to update soundpack folders in '{base_dir}'.")
+    logger.info("Using template file '%s' to update soundpack folders in '%s'.", template_file, base_dir)
 
-    if awspolly_missing_files > 0:
+    if awspolly_num_missing_files > 0:
         for soundpack_dir in awspolly_dirs:
             voice: str = soundpack_dir.name.split("-", 1)[1]
             sounds_dir: Path = soundpack_dir / "sounds"
             if not sounds_dir.exists() or not sounds_dir.is_dir():
-                print(f"Info: No 'sounds' subfolder in '{soundpack_dir.name}', skipping.")
+                logger.info("No 'sounds' subfolder in '%s', skipping.", soundpack_dir.name)
                 continue
-            print(f"Creating TTS files in soundpack folder '{soundpack_dir.name}'...")
+            logger.info("Creating TTS files in soundpack folder '%s'...", soundpack_dir.name)
             retcode: int = ttsfromtemplate_awspolly.ttsfromtemplate_awspolly(
                 polly_client=polly_client,  # type: ignore
                 voiceid=cast("VoiceIdType", voice),
@@ -161,16 +182,16 @@ def update_all_soundpacks(template_file: Path | None = None, base_dir: Path | No
                 output_dir=soundpack_dir,
             )
             if retcode != 0:
-                print(f"Error: processing soundpack '{soundpack_dir.name}'.")
+                logger.error("Error: processing soundpack '%s'.", soundpack_dir.name)
 
-    if ttsm_missing_files > 0:
+    if ttsm_num_missing_files > 0:
         for soundpack_dir in ttsm_dirs:
             voice: str = soundpack_dir.name.split("-", 1)[1]
             sounds_dir: Path = soundpack_dir / "sounds"
             if not sounds_dir.exists() or not sounds_dir.is_dir():
-                print(f"Info: No 'sounds' subfolder in '{soundpack_dir.name}', skipping.")
+                logger.info("No 'sounds' subfolder in '%s', skipping.", soundpack_dir.name)
                 continue
-            print(f"Creating TTS files in soundpack folder '{soundpack_dir.name}'...")
+            logger.info("Creating TTS files in soundpack folder '%s'...", soundpack_dir.name)
             retcode: int = ttsfromtemplate_ttsmonster.ttsfromtemplate_ttsmonster(
                 ttsmapi_client=ttsmapi_client,  # type: ignore
                 voice=voice,
@@ -178,7 +199,7 @@ def update_all_soundpacks(template_file: Path | None = None, base_dir: Path | No
                 output_dir=soundpack_dir,
             )
             if retcode != 0:
-                print(f"Error: processing soundpack '{soundpack_dir.name}'.")
+                logger.error("Error: processing soundpack '%s'.", soundpack_dir.name)
 
     return 0
 
@@ -195,9 +216,20 @@ def main() -> int:
     parser.add_argument(
         "-d", "--directory", help="the directory containing soundpack subdirectories to update", default=str(Path.cwd())
     )
+    parser.add_argument("-m", "--missing", help="output list of missing TTS files", action="store_true")
+    parser.add_argument(
+        "--log-level",
+        help="set exact logging level",
+        choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
+        default=None,
+    )
     args: argparse.Namespace = parser.parse_args()
 
-    return update_all_soundpacks(Path(args.file), Path(args.directory))
+    level: Literal[20] = getattr(logging, args.log_level) if args.log_level else logging.INFO
+
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+
+    return update_all_soundpacks(template_file=Path(args.file), base_dir=Path(args.directory), log_missing=args.missing)
 
 
 if __name__ == "__main__":
