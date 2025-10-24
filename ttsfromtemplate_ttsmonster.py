@@ -21,12 +21,14 @@ ssml_text: (optional) SSML marked up text, empty string if none
 
 import argparse
 import json
+import logging
 import os
 import sys
 import tempfile
 import time
 from json import JSONDecodeError
 from pathlib import Path
+from typing import Literal
 
 import ffmpeg
 import requests
@@ -36,6 +38,14 @@ from ttsmapi.enums import VoiceIdEnum
 from ttsmapi.exceptions import TTSMAPIError
 
 import ttsutil
+
+logger = logging.getLogger(__name__)
+
+
+MAX_VOL_DB_OFFSET = -0.5  # max volume normalization offset for safety
+SHORT_TEXT_LENGTH = 6  # TTS text length of this or less gets extra TTS file size allowance
+BIT_ALLOWANCE_PER_CHAR = 2048  # 2KB per character allowed in output TTS file size
+EXTRA_BITS_FOR_SHORT = 1024  # +1KB per character allowance for very short text
 
 
 def ttsfromtemplate_ttsmonster(
@@ -64,13 +74,13 @@ def ttsfromtemplate_ttsmonster(
     sounds_dir: Path = output_dir / "sounds"
 
     if not template_file.exists() or not template_file.is_file():
-        print(f"Error: template file '{template_file}' does not exist.")
+        logger.error("Template file '%s' does not exist", template_file)
         return 1
     if not output_dir.exists() or not output_dir.is_dir():
-        print(f"Error: output directory '{output_dir}' does not exist.")
+        logger.error("Output directory '%s' does not exist", output_dir)
         return 1
     if not sounds_dir.exists() or not sounds_dir.is_dir():
-        print(f"Error: required subdirectory '{sounds_dir}' does not exist.")
+        logger.error("Required subdirectory '%s' does not exist", sounds_dir)
         return 1
 
     if isinstance(voice, str) and voice.upper() in VoiceIdEnum._member_names_:
@@ -78,21 +88,22 @@ def ttsfromtemplate_ttsmonster(
     elif voice in VoiceIdEnum:
         voiceid = str(voice)
     else:
-        print(f"Warning: Specified voice name or ID '{voice}' does not match any public voice.")
-        print("   Proceeding with the assumption that it's a private voice ID.")
+        logger.warning("Specified voice name or ID '%s' does not match any public voice", voice)
+        logger.warning("Proceeding with the assumption that it's a private voice ID")
         voiceid = str(voice)
 
     with Path.open(template_file, encoding="utf-8") as f:
         try:
             template_data: list[dict[str, str]] = json.load(f)
         except (JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"{type(e)}: {e}")
+            logger.exception("Failed to load template file: %s", type(e).__name__)
             return 1
 
-    print(
-        f"TTS.Monster API client ready: Current plan: '{ttsmapi_client.user_info['current_plan']}', "
-        f"Characters used: {ttsmapi_client.user_info['character_usage']} / "
-        f"Character allowance: {ttsmapi_client.user_info['character_allowance']}"
+    logger.info(
+        "TTS.Monster API client ready: Current plan: '%s', Characters used: %d / %d",
+        ttsmapi_client.user_info["current_plan"],
+        ttsmapi_client.user_info["character_usage"],
+        ttsmapi_client.user_info["character_allowance"],
     )
 
     created_count: int = 0
@@ -121,14 +132,14 @@ def ttsfromtemplate_ttsmonster(
 
         try:
             response: dict = ttsmapi_client.generate(voice_id=voiceid, message=tts_text)
-        except (ConnectionError, ReadTimeout) as e:
+        except (ConnectionError, ReadTimeout):
             # On ConnectionError or ReadTimeout, assume TTS.Monster is flaky, just continue to next item
-            print(f"{type(e)}: {e}")
+            logger.exception("TTS.M API connection error, skipping item")
             continue
-        except (TTSMAPIError, HTTPError) as e:
-            print(f"{type(e)}: {e}")
-            print(f"Template item: {item}")
-            print(f"Call: generate('{voice}', '{tts_text}')")
+        except (TTSMAPIError, HTTPError):
+            logger.exception("TTS.M API error during TTS generation")
+            logger.exception("Template item: %s", item)
+            logger.exception("Call: generate('%s', '%s')", voice, tts_text)
             return 1
 
         # print(f"Generate() completed in {time.perf_counter() - start_time:.2f}s")
@@ -143,8 +154,8 @@ def ttsfromtemplate_ttsmonster(
                     f.write(url_response.content)
                     try:
                         max_volume: float = ttsutil.get_max_volume(f.name)
-                    except ValueError as e:
-                        print(f"{type(e)}: {e}")
+                    except ValueError:
+                        logger.exception("Could not determine max volume of audio file")
                         return 1
 
                     # Set ffmpeg input to the tempfile.
@@ -167,8 +178,8 @@ def ttsfromtemplate_ttsmonster(
                     # to increase the file volume by the same amount, resulting in -0.5db peak.
                     # Unfortunately, other ffmpeg filters such as loudnorm or dynaudnorm do not
                     # work well for our purposes.
-                    if max_volume < -0.5:
-                        volume_adjustment: float = -max_volume - 0.5  # 0.5dB for clipping safety
+                    if max_volume < MAX_VOL_DB_OFFSET:
+                        volume_adjustment: float = -max_volume - MAX_VOL_DB_OFFSET
                         input_stream = input_stream.volume(volume=f"{volume_adjustment}dB")
 
                     # Lastly, set the output file and run ffmpeg.
@@ -177,40 +188,45 @@ def ttsfromtemplate_ttsmonster(
                     # Reject the file if it's too long/too large since that indicates the
                     # TTS.Monster model failed to produce reasonable audio output.
                     # Just delete the file, exiting loop with error not desirable.
-                    # Add warn if the file is > 1KB per character?
-                    max_size: int = 2048 * len(tts_text)  # 2KB per character max
-                    if len(tts_text) <= 6:
-                        max_size += 1024 * len(tts_text)  # +1KB per character for very short text
+                    max_size: int = BIT_ALLOWANCE_PER_CHAR * len(tts_text)
+                    if len(tts_text) <= SHORT_TEXT_LENGTH:
+                        max_size += EXTRA_BITS_FOR_SHORT * len(tts_text)
 
                     if file_fullpath.stat().st_size > max_size:
-                        print(
-                            f"Error: Output {file_fullpath} is too large: {file_fullpath.stat().st_size // 1024}KB, "
-                            f"removing it.\n"
+                        logger.warning(
+                            "Output %s is too large (%dKB), removing it",
+                            file_fullpath,
+                            file_fullpath.stat().st_size // 1024,
                         )
                         file_fullpath.unlink()
                         # implement a retry mechanism?
                         continue
 
-            except (OSError, HTTPError, ReadTimeout) as e:
-                print(f"{type(e)}: {e}")
+            except (OSError, HTTPError, ReadTimeout):
+                logger.exception("Failed to get audio file from TTS.Monster returned URL")
                 return 1
         else:
-            print("Error: No audio URL in TTS.Monster response")
+            logger.error("No audio URL in TTS.Monster response")
             return 1
 
         created_count += 1
         # if created_count > 1:
         #    print("\033[1A", end="\x1b[2K")
-        print(
-            f"Created file {created_count}/~{len(template_data) - created_count - skipped_count + 1}: {file_fullpath}. "
-            f"Used: {response['characterUsage']}/{ttsmapi_client.user_info['character_allowance']}c",
-            flush=True,
+        logger.info(
+            "Created file %d/~%d: %s. Used: %d/%d chars",
+            created_count,
+            len(template_data) - created_count - skipped_count + 1,
+            file_fullpath,
+            response["characterUsage"],
+            ttsmapi_client.user_info["character_allowance"],
         )
 
-    print(
-        f"Successfully finished. {created_count} file(s) created and {skipped_count} "
-        f"existing file(s) skipped in {time.strftime('%Mm:%Ss', time.gmtime(total_elapsed))}. "
-        f"{created_count + skipped_count} total."
+    logger.info(
+        "Successfully finished. %d file(s) created and %d existing file(s) skipped in %s. %d total.",
+        created_count,
+        skipped_count,
+        time.strftime("%Mm:%Ss", time.gmtime(total_elapsed)),
+        created_count + skipped_count,
     )
     return 0
 
@@ -232,18 +248,28 @@ def main() -> int:
         "to create the directory structure and tts files in",
         default=Path.cwd(),
     )
+    parser.add_argument(
+        "-l",
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="set the logging output level",
+    )
     args: argparse.Namespace = parser.parse_args()
+
+    level: Literal[20] = getattr(logging, args.log_level) if args.log_level else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
     try:
         ttsm_apikey: str = os.environ["TTSMONSTER_API_KEY"]
-    except KeyError as e:
-        print(f"{type(e)}: {e}")
+    except KeyError:
+        logger.exception("TTSMONSTER_API_KEY environment variable is not set")
         return 1
 
     try:
         ttsmapi_client: ttsmapi.Client = ttsmapi.Client(ttsm_apikey)
-    except (TTSMAPIError, HTTPError) as e:
-        print(f"{type(e)}: {e}")
+    except (TTSMAPIError, HTTPError):
+        logger.exception("TTS.M API client initialization failed")
         return 1
 
     return ttsfromtemplate_ttsmonster(

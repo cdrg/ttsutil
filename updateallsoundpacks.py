@@ -10,10 +10,11 @@ New soundpacks can be created by creating a new folder with the correct name and
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import ttsmapi
 from boto3 import Session
@@ -26,8 +27,6 @@ from ttsmapi.exceptions import TTSMAPIError
 
 import ttsfromtemplate_awspolly
 import ttsfromtemplate_ttsmonster
-import logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +217,7 @@ def main() -> int:
     )
     parser.add_argument("-m", "--missing", help="output list of missing TTS files", action="store_true")
     parser.add_argument(
+        "-l",
         "--log-level",
         help="set exact logging level",
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
@@ -226,7 +226,6 @@ def main() -> int:
     args: argparse.Namespace = parser.parse_args()
 
     level: Literal[20] = getattr(logging, args.log_level) if args.log_level else logging.INFO
-
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
     return update_all_soundpacks(template_file=Path(args.file), base_dir=Path(args.directory), log_missing=args.missing)

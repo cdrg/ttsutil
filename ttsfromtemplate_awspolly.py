@@ -24,13 +24,14 @@ ssml_text: (optional) SSML marked up text, empty string if none
 
 import argparse
 import json
+import logging
 import os
 import sys
 import tempfile
 from contextlib import closing
 from json import JSONDecodeError
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
 import ffmpeg
 from boto3 import Session
@@ -44,10 +45,13 @@ from mypy_boto3_polly.literals import (
     VoiceIdType,
 )
 
+import ttsutil
+
 if TYPE_CHECKING:
     from mypy_boto3_polly.type_defs import SynthesizeSpeechOutputTypeDef
 
-import ttsutil
+
+logger = logging.getLogger(__name__)
 
 
 def ttsfromtemplate_awspolly(
@@ -85,26 +89,26 @@ def ttsfromtemplate_awspolly(
     elif outputformat == "pcm":
         ffmpeg_input_ext: str = ".pcm"
     else:
-        print(f"Error: Invalid Polly output format '{outputformat}'")
+        logger.error("Error: Invalid Polly output format '%s'", outputformat)
         return 1
 
     sounds_dir: Path = output_dir / "sounds"
 
     if not template_file.exists():
-        print(f"Error: template file '{template_file}' does not exist.")
+        logger.error("Error: template file '%s' does not exist.", template_file)
         return 1
     if not output_dir.exists():
-        print(f"Error: output directory '{output_dir}' does not exist.")
+        logger.error("Error: output directory '%s' does not exist.", output_dir)
         return 1
     if not sounds_dir.exists():
-        print(f"Error: required output subdirectory '{sounds_dir}' does not exist.")
+        logger.error("Error: required output subdirectory '%s' does not exist.", sounds_dir)
         return 1
 
     with Path.open(template_file, encoding="utf-8") as f:
         try:
             template_data: list[dict[str, str]] = json.load(f)
-        except (JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"{type(e)}: {e}")
+        except (JSONDecodeError, UnicodeDecodeError):
+            logger.exception("Error reading template file %s", template_file)
             return 1
 
     created_count: int = 0
@@ -149,18 +153,22 @@ def ttsfromtemplate_awspolly(
         try:
             response: SynthesizeSpeechOutputTypeDef = polly_client.synthesize_speech(**synth_speech_kwargs)  # type: ignore
         # if SSML is invalid, log and continue with next item
-        except polly_client.exceptions.InvalidSsmlException as e:
-            print(f"{e}: Fix the SSML.")
-            print(f"Template item: {item}")
+        except polly_client.exceptions.InvalidSsmlException:
+            logger.exception("Invalid SSML for template item: %s", item)
             continue
-        except (BotoCoreError, ClientError) as e:
-            print(f"{type(e)}: {e}")
-            print(f"Template item: {item}")
-            print(f"Call: synthesize_speech({tts_text}, {voiceid}, {texttype}, {engine}, {outputformat})")
+        except (BotoCoreError, ClientError):
+            logger.exception(
+                "AWS Polly synthesize_speech failed for template item %s; call: synthesize_speech(text, %s, %s, %s, %s)",
+                item,
+                voiceid,
+                texttype,
+                engine,
+                outputformat,
+            )
             return 1
 
         if "AudioStream" not in response:
-            print("Error: No AudioStream in AWS Polly response")
+            logger.error("Error: No AudioStream in AWS Polly response")
             return 1
 
         # use closing to ensure that the close method of the stream is called after the with finishes
@@ -170,15 +178,15 @@ def ttsfromtemplate_awspolly(
                 # delete=False so we don't have to worry about staying in the with context
                 with tempfile.NamedTemporaryFile(suffix=(ffmpeg_input_ext), delete=False) as f:
                     f.write(stream.read())
-            except OSError as e:
-                print(f"{type(e)}: {e}")
+            except OSError:
+                logger.exception("Error writing temporary audio file")
                 return 1
 
         # Get the max db of the audio file with ffmpeg volumedetect so we can increase file volume.
         try:
             input_max_volume: float = ttsutil.get_max_volume(f.name)
-        except (FFMpegExecuteError, ValueError) as e:
-            print(f"{type(e)}: {e}")
+        except (FFMpegExecuteError, ValueError):
+            logger.exception("Error processing audio with ffmpeg")
             Path(f.name).unlink(missing_ok=True)  # cleanup temp file if exiting early
             return 1
 
@@ -216,8 +224,8 @@ def ttsfromtemplate_awspolly(
         # Lastly, run ffmpeg.
         try:
             output_stream.run(quiet=True)
-        except FFMpegExecuteError as e:
-            print(f"{type(e)}: {e}")
+        except FFMpegExecuteError:
+            logger.exception("ffmpeg failed when writing output file %s", file_fullpath)
             Path(f.name).unlink(missing_ok=True)  # cleanup temp file if exiting early
             return 1
 
@@ -227,13 +235,18 @@ def ttsfromtemplate_awspolly(
         created_count += 1
         # if created_count > 1:
         #     print("\033[1A", end="\x1b[2K")
-        print(
-            f"Created file {created_count}/~{len(template_data) - created_count - skipped_count + 1}: {file_fullpath}",
-            flush=True,
+        logger.info(
+            "Created file %d/~%d: %s",
+            created_count,
+            (len(template_data) - created_count - skipped_count + 1),
+            file_fullpath,
         )
 
-    print(
-        f"Successfully finished. {created_count} file(s) created and {skipped_count} existing file(s) skipped. {created_count + skipped_count} total."
+    logger.info(
+        "Successfully finished. %d file(s) created and %d existing file(s) skipped. %d total.",
+        created_count,
+        skipped_count,
+        created_count + skipped_count,
     )
 
     return 0
@@ -254,7 +267,7 @@ def main() -> int:
         "--directory",
         help="the output directory containing a 'sounds' subdirectory "
         "to create the directory structure and tts files in",
-        default=os.getcwd(),
+        default=Path.cwd(),
     )
     parser.add_argument(
         "-l", "--languagecode", help="AWS Polly language code to use", choices=get_args(LanguageCodeType)
@@ -269,18 +282,28 @@ def main() -> int:
         choices=get_args(OutputFormatType),
         default="mp3",
     )
+    parser.add_argument(
+        "-l",
+        "--log-level",
+        help="set exact logging level",
+        choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
+        default=None,
+    )
     args: argparse.Namespace = parser.parse_args()
+
+    level: Literal[20] = getattr(logging, args.log_level) if args.log_level else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
     try:
         aws_profile: str = os.environ["AWS_PROFILE"]
-    except KeyError as e:
-        print(f"{type(e)}: {e}")
+    except KeyError:
+        logger.exception("AWS_PROFILE not set in environment")
         return 1
 
     try:
         polly_client: PollyClient = Session(profile_name=aws_profile).client("polly")  # type: ignore
-    except (ClientError, NoCredentialsError) as e:
-        print(f"{type(e)}: {e}")
+    except (ClientError, NoCredentialsError):
+        logger.exception("Failed to initialize AWS Polly client")
         return 1
 
     return ttsfromtemplate_awspolly(
