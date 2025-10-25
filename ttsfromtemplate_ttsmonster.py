@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 MAX_VOL_DB_OFFSET = -0.5  # max volume normalization offset for safety
-SHORT_TEXT_LENGTH = 6  # TTS text length of this or less gets extra TTS file size allowance
+SHORT_TEXT_LENGTH = 9  # TTS text length of this or less gets extra TTS file size allowance
 BIT_ALLOWANCE_PER_CHAR = 2048  # 2KB per character allowed in output TTS file size
 EXTRA_BITS_FOR_SHORT = 1024  # +1KB per character allowance for very short text
 
@@ -53,6 +53,8 @@ def ttsfromtemplate_ttsmonster(
     voice: VoiceIdEnum | str,
     template_file: Path | None = None,
     output_dir: Path | None = None,
+    *,
+    quality_checks: bool = True,
 ) -> int:
     """Create a soundpack set of TTS mp3 files from a template JSON file, using TTS.Monster.
 
@@ -63,6 +65,7 @@ def ttsfromtemplate_ttsmonster(
         template_file (Path, optional): Path to the input JSON template file. Defaults to "template.json".
         output_dir (Path, optional): the output directory containing a 'sounds' subdirectory to
             create the directory structure and tts files in. Defaults to current working directory.
+        quality_checks (bool): Whether to perform quality checks on generated TTS files.
 
     Returns:
         int: 0 on success, 1 on error.
@@ -145,6 +148,9 @@ def ttsfromtemplate_ttsmonster(
         # print(f"Generate() completed in {time.perf_counter() - start_time:.2f}s")
         total_elapsed += time.perf_counter() - start_time
 
+        # suppress ffmpeg INFO log messages
+        logging.getLogger("ffmpeg").setLevel(logging.WARNING)
+
         if "url" in response:
             # Retrieve the audio file with Requests to a tempfile. Unfortunately necessary because of
             # the need to do two-pass ffmpeg processing. Otherwise ffmpeg could get the file itself.
@@ -188,19 +194,20 @@ def ttsfromtemplate_ttsmonster(
                     # Reject the file if it's too long/too large since that indicates the
                     # TTS.Monster model failed to produce reasonable audio output.
                     # Just delete the file, exiting loop with error not desirable.
-                    max_size: int = BIT_ALLOWANCE_PER_CHAR * len(tts_text)
-                    if len(tts_text) <= SHORT_TEXT_LENGTH:
-                        max_size += EXTRA_BITS_FOR_SHORT * len(tts_text)
+                    if quality_checks:
+                        max_size: int = BIT_ALLOWANCE_PER_CHAR * len(tts_text)
+                        if len(tts_text) <= SHORT_TEXT_LENGTH:
+                            max_size += EXTRA_BITS_FOR_SHORT * len(tts_text)
 
-                    if file_fullpath.stat().st_size > max_size:
-                        logger.warning(
-                            "Output %s is too large (%dKB), removing it",
-                            file_fullpath,
-                            file_fullpath.stat().st_size // 1024,
-                        )
-                        file_fullpath.unlink()
-                        # implement a retry mechanism?
-                        continue
+                        if file_fullpath.stat().st_size > max_size:
+                            logger.warning(
+                                "Output %s is too large (%dKB), removing it",
+                                file_fullpath,
+                                file_fullpath.stat().st_size // 1024,
+                            )
+                            file_fullpath.unlink()
+                            # implement a retry mechanism?
+                            continue
 
             except (OSError, HTTPError, ReadTimeout):
                 logger.exception("Failed to get audio file from TTS.Monster returned URL")
@@ -249,6 +256,18 @@ def main() -> int:
         default=Path.cwd(),
     )
     parser.add_argument(
+        "--skipqa",
+        help="disable quality checks for generated TTS files",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--ignorequota",
+        help="ignore character quota limits in TTS.Monster API client, will incur overage charges if exceeded",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "-l",
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -267,7 +286,9 @@ def main() -> int:
         return 1
 
     try:
-        ttsmapi_client: ttsmapi.Client = ttsmapi.Client(ttsm_apikey)
+        ttsmapi_client: ttsmapi.Client = ttsmapi.Client(
+            api_key=ttsm_apikey, enforce_char_quota=not bool(args.ignorequota)
+        )
     except (TTSMAPIError, HTTPError):
         logger.exception("TTS.M API client initialization failed")
         return 1
@@ -277,6 +298,7 @@ def main() -> int:
         voice=args.voiceid,
         template_file=Path(args.file),
         output_dir=Path(args.directory),
+        quality_checks=not bool(args.skipqa),
     )
 
 

@@ -65,7 +65,12 @@ def _count_missing_for_service(
 
 
 def update_all_soundpacks(
-    template_file: Path | None = None, base_dir: Path | None = None, *, log_missing: bool = False
+    template_file: Path | None = None,
+    base_dir: Path | None = None,
+    *,
+    log_missing: bool = False,
+    quality_checks: bool = True,
+    enforce_char_quota: bool = True,
 ) -> int:
     """Update all soundpack folders in the specified directory using the specified TTS template file.
 
@@ -134,7 +139,7 @@ def update_all_soundpacks(
             return 1
 
         try:
-            ttsmapi_client: ttsmapi.Client = ttsmapi.Client(ttsm_apikey)
+            ttsmapi_client: ttsmapi.Client = ttsmapi.Client(api_key=ttsm_apikey, enforce_char_quota=enforce_char_quota)
         except (TTSMAPIError, HTTPError):
             logger.exception("Failed to initialize TTS.Monster API client")
             return 1
@@ -155,7 +160,7 @@ def update_all_soundpacks(
         ttsm_num_missing_chars,
     )
 
-    if ttsm_num_missing_files > 0 or awspolly_num_missing_files > 0:
+    if awspolly_num_missing_files > 0 or ttsm_num_missing_files > 0:
         prompt = "You are responsible for any TTS generation fees incurred. Proceed? (y/n): "
         if input(prompt).strip().lower() != "y":
             print("'n' selected, exiting.")  # noqa: T201
@@ -196,6 +201,7 @@ def update_all_soundpacks(
                 voice=voice,
                 template_file=template_file,
                 output_dir=soundpack_dir,
+                quality_checks=quality_checks,
             )
             if retcode != 0:
                 logger.error("Error: processing soundpack '%s'.", soundpack_dir.name)
@@ -217,6 +223,18 @@ def main() -> int:
     )
     parser.add_argument("-m", "--missing", help="output list of missing TTS files", action="store_true")
     parser.add_argument(
+        "--skipqa",
+        help="disable quality checks for generated TTS files",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--ignorequota",
+        help="ignore character quota limits in TTS.Monster API client, will incur overage charges if exceeded",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "-l",
         "--log-level",
         help="set exact logging level",
@@ -228,7 +246,13 @@ def main() -> int:
     level: Literal[20] = getattr(logging, args.log_level) if args.log_level else logging.INFO
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
-    return update_all_soundpacks(template_file=Path(args.file), base_dir=Path(args.directory), log_missing=args.missing)
+    return update_all_soundpacks(
+        template_file=Path(args.file),
+        base_dir=Path(args.directory),
+        log_missing=bool(args.missing),
+        quality_checks=not bool(args.skipqa),
+        enforce_char_quota=not bool(args.ignorequota),
+    )
 
 
 if __name__ == "__main__":

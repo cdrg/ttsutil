@@ -182,6 +182,9 @@ def ttsfromtemplate_awspolly(
                 logger.exception("Error writing temporary audio file")
                 return 1
 
+        # suppress ffmpeg INFO log messages
+        logging.getLogger("ffmpeg").setLevel(logging.WARNING)
+
         # Get the max db of the audio file with ffmpeg volumedetect so we can increase file volume.
         try:
             input_max_volume: float = ttsutil.get_max_volume(f.name)
