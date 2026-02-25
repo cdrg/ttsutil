@@ -286,7 +286,7 @@ def main() -> int:
         default="mp3",
     )
     parser.add_argument(
-        "-l",
+        "-ll",
         "--log-level",
         help="set exact logging level",
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
