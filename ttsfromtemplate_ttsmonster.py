@@ -173,11 +173,12 @@ def ttsfromtemplate_ttsmonster(
                     if "rate='fast'" in ssml_text:
                         input_stream = input_stream.atempo(tempo=1.3)
 
-                    # TODO: trim silence, since TTS.Monster models are unstable and sometimes emit lengthy silence,
-                    # among other issues.
-                    # should probably first try passing an AudioStream to ttsutil.trim_silence(),
-                    # returning the modified AudioStream, and if that doesn't work, write to a file and pass that back.
-                    # ttsutil.trim_silence(input_stream, silence_threshold=-30.0, min_silence_duration=0.2)
+                    # Trim silence, since TTS.Monster models are unstable and sometimes emit lengthy silence.
+                    input_stream = ttsutil.trim_silence(
+                        input_stream,
+                        min_start_duration=0,
+                        silence_threshold="-30.0dB",
+                    )
 
                     # Files must be as loud as possible to be consistently audible in-game.
                     # If previously determined peak db is less than -0.5db, use ffmpeg volume filter

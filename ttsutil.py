@@ -2,7 +2,6 @@
 
 import os
 import re
-from pathlib import Path
 
 import ffmpeg
 
@@ -46,43 +45,43 @@ def get_max_volume(filepath: str) -> float:
     return max_volume
 
 
-def trim_silence(filepath: str, silence_threshold: float = -30.0, min_silence_duration: float = 0.2) -> str:
-    """Trim silence from the beginning and end of an audio file using ffmpeg silenceremove filter.
+def trim_silence(
+    input_stream: ffmpeg.AudioStream,
+    min_start_duration: float = 0,
+    silence_threshold: str = "-30.0dB",
+) -> ffmpeg.AudioStream:
+    """Trim silence from the beginning and end of an AudioStream using ffmpeg silenceremove filter.
 
-    TODO: THIS IS NOT YET TESTED. Should probably input/output AudioStream instead of filepath.
+    https://ffmpeg.org/ffmpeg-filters.html#silenceremove
 
     Args:
-        filepath (str): ffmpeg-compatible audio file path.
-        silence_threshold (float): Silence threshold in dB. Default is -30.0 dB.
-        min_silence_duration (float): Minimum duration of silence to trim in seconds. Default is 0.2 seconds.
+        input_stream (ffmpeg.AudioStream): The input AudioStream to trim.
+        min_start_duration (float): "The amount of time that non-silence must be detected before it stops trimming audio."
+         Non-zero values treat short noises X seconds long as silence. Default is 0.
+        silence_threshold (str): Silence threshold in amplitude, append 'dB' for dB. Default is -30.0dB.
 
     Returns:
-        str: Path to the trimmed audio file.
+        ffmpeg.AudioStream: The AudioStream with silence trimming filter added.
+
 
     """
-    p = Path(filepath)
-    output_filepath: str = str(p.with_name(p.stem + "_trimmed" + p.suffix))
-
     # ffmpeg -i input.mp3 -af "
-    # silenceremove=start_periods=1:start_duration=1:start_threshold=-30dB:detection=peak,
+    # silenceremove=start_periods=1:start_duration=x:start_threshold=-30dB:detection=peak,
     # aformat=dblp,  # noqa: ERA001
     # areverse,
-    # silenceremove=start_periods=1:start_duration=1:start_threshold=-30dB:detection=peak,
+    # silenceremove=start_periods=1:start_duration=x:start_threshold=-30dB:detection=peak,
     # aformat=dblp,  # noqa: ERA001
     # areverse" output.mp3
 
-    input_stream: ffmpeg.AudioStream = ffmpeg.input(filepath)
     input_stream = input_stream.silenceremove(
-        start_periods=1, start_duration=min_silence_duration, start_threshold=silence_threshold, detection="peak"
+        start_periods=1, start_duration=min_start_duration, start_threshold=silence_threshold, detection="peak"
     )
     input_stream = input_stream.aformat(sample_fmts="dblp")
     input_stream = input_stream.areverse()
     input_stream = input_stream.silenceremove(
-        start_periods=1, start_duration=min_silence_duration, start_threshold=silence_threshold, detection="peak"
+        start_periods=1, start_duration=min_start_duration, start_threshold=silence_threshold, detection="peak"
     )
     input_stream = input_stream.aformat(sample_fmts="dblp")
     input_stream = input_stream.areverse()
 
-    input_stream.output(filename=output_filepath).run(quiet=True)
-
-    return output_filepath
+    return input_stream  # noqa: RET504
