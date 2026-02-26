@@ -46,6 +46,7 @@ MAX_VOL_DB_OFFSET = -0.5  # max volume normalization offset for safety
 SHORT_TEXT_LENGTH = 9  # TTS text length of this or less gets extra TTS file size allowance
 BIT_ALLOWANCE_PER_CHAR = 2048  # 2KB per character allowed in output TTS file size
 EXTRA_BITS_FOR_SHORT = 1024  # +1KB per character allowance for very short text
+EXTRA_BITS_FOR_MIXIN = 1024  # +1KB per character allowance for mixin applied
 
 
 def ttsfromtemplate_ttsmonster(
@@ -118,7 +119,10 @@ def ttsfromtemplate_ttsmonster(
     for item in template_data:
         file_partialpath: Path = Path(item["path"])
         tts_text: str = item["tts_text"]
-        ssml_text: str = item["ssml_text"]  # TTS.Monster does not support SSML, but we may simulate some features
+        ssml_text: str = item.get(
+            "ssml_text", ""
+        )  # TTS.Monster does not support SSML, but we may simulate some features
+        mixin_id: str = item.get("mixin", "")
 
         file_fullpath: Path = sounds_dir / file_partialpath
         # skip if file already exists
@@ -130,7 +134,6 @@ def ttsfromtemplate_ttsmonster(
         if not file_fullpath.parent.exists():
             file_fullpath.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
 
-        # print(f"Sent Generate(voice_id={args.voiceid}, message={tts_text})...")
         start_time: float = time.perf_counter()
 
         try:
@@ -145,7 +148,6 @@ def ttsfromtemplate_ttsmonster(
             logger.exception("Call: generate('%s', '%s')", voice, tts_text)
             return 1
 
-        # print(f"Generate() completed in {time.perf_counter() - start_time:.2f}s")
         total_elapsed += time.perf_counter() - start_time
 
         # suppress ffmpeg INFO log messages
@@ -158,8 +160,24 @@ def ttsfromtemplate_ttsmonster(
                 url_response: requests.Response = requests.get(response["url"], timeout=30)
                 with tempfile.NamedTemporaryFile(suffix=Path(response["url"]).suffix) as f:
                     f.write(url_response.content)
+
+                    # If mixin sound is specified, use ffmpeg to mix the TTS audio with the specified mixin sound.
+                    # EG: Typically for "divine tink" (sound 6)
+                    # Mix first so that following audio adjustments are not affected.
+                    if mixin_id:
+                        mixed_tempfile: tempfile._TemporaryFileWrapper | None = ttsutil.mixin_filtersound(
+                            Path(f.name), mixin_id
+                        )
+                        if mixed_tempfile is not None:
+                            Path(f.name).unlink(missing_ok=True)  # cleanup original temp file after mixing
+                            f = mixed_tempfile  # set f to the new mixed tempfile for further processing
+                        else:
+                            logger.error("Failed to mix filtersound for item %s", item)
+                            return 1
+
+                    # Get the max db of the audio file with ffmpeg volumedetect so we can increase file volume.
                     try:
-                        max_volume: float = ttsutil.get_max_volume(f.name)
+                        max_volume: float = ttsutil.get_max_volume(Path(f.name))
                     except ValueError:
                         logger.exception("Could not determine max volume of audio file")
                         return 1
@@ -177,7 +195,7 @@ def ttsfromtemplate_ttsmonster(
                     input_stream = ttsutil.trim_silence(
                         input_stream,
                         min_start_duration=0,
-                        silence_threshold="-30.0dB",
+                        silence_threshold="-40.0dB",
                     )
 
                     # Files must be as loud as possible to be consistently audible in-game.
@@ -199,6 +217,8 @@ def ttsfromtemplate_ttsmonster(
                         max_size: int = BIT_ALLOWANCE_PER_CHAR * len(tts_text)
                         if len(tts_text) <= SHORT_TEXT_LENGTH:
                             max_size += EXTRA_BITS_FOR_SHORT * len(tts_text)
+                        if mixin_id:  # extra allowance for mixin files since dual channel etc
+                            max_size += EXTRA_BITS_FOR_MIXIN * len(tts_text)
 
                         if file_fullpath.stat().st_size > max_size:
                             logger.warning(
@@ -218,8 +238,7 @@ def ttsfromtemplate_ttsmonster(
             return 1
 
         created_count += 1
-        # if created_count > 1:
-        #    print("\033[1A", end="\x1b[2K")
+
         logger.info(
             "Created file %d/~%d: %s. Used: %d/%d chars",
             created_count,

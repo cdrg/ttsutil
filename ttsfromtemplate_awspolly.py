@@ -119,7 +119,8 @@ def ttsfromtemplate_awspolly(
     for item in template_data:
         file_partialpath: Path = Path(item["path"])
         tts_text: str = item["tts_text"]
-        ssml_text: str = item["ssml_text"]
+        ssml_text: str = item.get("ssml_text", "")
+        mixin_id: str = item.get("mixin", "")
 
         file_fullpath: Path = sounds_dir / file_partialpath
         # skip if file already exists
@@ -185,9 +186,21 @@ def ttsfromtemplate_awspolly(
         # suppress ffmpeg INFO log messages
         logging.getLogger("ffmpeg").setLevel(logging.WARNING)
 
+        # If mixin sound is specified, use ffmpeg to mix the TTS audio with the specified mixin sound.
+        # EG: Typically for "divine tink" (sound 6)
+        # Mix first so that following audio adjustments are not affected.
+        if mixin_id:
+            mixed_tempfile: tempfile._TemporaryFileWrapper | None = ttsutil.mixin_filtersound(Path(f.name), mixin_id)
+            if mixed_tempfile is not None:
+                Path(f.name).unlink(missing_ok=True)  # cleanup original temp file after mixing
+                f = mixed_tempfile  # set f to the new mixed tempfile for further processing
+            else:
+                logger.error("Failed to mix filtersound for item %s", item)
+                return 1
+
         # Get the max db of the audio file with ffmpeg volumedetect so we can increase file volume.
         try:
-            input_max_volume: float = ttsutil.get_max_volume(f.name)
+            input_max_volume: float = ttsutil.get_max_volume(Path(f.name))
         except (FFMpegExecuteError, ValueError):
             logger.exception("Error processing audio with ffmpeg")
             Path(f.name).unlink(missing_ok=True)  # cleanup temp file if exiting early
@@ -201,6 +214,15 @@ def ttsfromtemplate_awspolly(
             input_stream: ffmpeg.AudioStream = ffmpeg.input(f.name, ar=16000, ac=1, f="s16le")
         else:
             input_stream: ffmpeg.AudioStream = ffmpeg.input(f.name)
+
+        if mixin_id:
+            # Trim silence. Not usually necessary for AWS Polly output, but mixin filtersound files can introduce silence.
+            # -40.0db instead of -30.0db threshold to minimize clipping at the end of divine tink.
+            input_stream = ttsutil.trim_silence(
+                input_stream,
+                min_start_duration=0,
+                silence_threshold="-40.0dB",
+            )
 
         # TODO: set speech speed to hit a specific total audio duration, instead of guessing?
         # TODO: Check if selected AWS Polly voice supports SSML? Currently only using SSML voices.
@@ -232,12 +254,11 @@ def ttsfromtemplate_awspolly(
             Path(f.name).unlink(missing_ok=True)  # cleanup temp file if exiting early
             return 1
 
-        # cleanup temporary file
+        # Cleanup temporary files
         Path(f.name).unlink(missing_ok=True)
 
         created_count += 1
-        # if created_count > 1:
-        #     print("\033[1A", end="\x1b[2K")
+
         logger.info(
             "Created file %d/~%d: %s",
             created_count,
