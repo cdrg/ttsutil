@@ -111,6 +111,13 @@ def ttsfromtemplate_awspolly(  # noqa: PLR0913
             logger.exception("Error reading template file %s", template_file)
             return 1
 
+    existing_paths: set[Path] = set()
+    for item in template_data:
+        file_fullpath: Path = sounds_dir / Path(item["path"])
+        if not file_fullpath.exists():
+            existing_paths.add(file_fullpath)
+    missing_files_total: int = len(existing_paths)
+
     created_count: int = 0
     skipped_count: int = 0
 
@@ -243,12 +250,14 @@ def ttsfromtemplate_awspolly(  # noqa: PLR0913
         Path(f.name).unlink(missing_ok=True)
 
         created_count += 1
+        remaining_files: int = missing_files_total - created_count
 
         logger.info(
-            "Created file %d/~%d: %s",
+            "Created file %d/%d: %s (%d remaining)",
             created_count,
-            (len(template_data) - created_count - skipped_count + 1),
+            missing_files_total,
             file_fullpath,
+            remaining_files,
         )
 
     logger.info(

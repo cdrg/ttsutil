@@ -103,6 +103,13 @@ def ttsfromtemplate_ttsmonster(
             logger.exception("Failed to load template file: %s", type(e).__name__)
             return 1
 
+    existing_paths: set[Path] = set()
+    for item in template_data:
+        file_fullpath: Path = sounds_dir / Path(item["path"])
+        if not file_fullpath.exists():
+            existing_paths.add(file_fullpath)
+    missing_files_total: int = len(existing_paths)
+
     logger.info(
         "TTS.Monster API client ready: Current plan: '%s', Characters used: %d / %d",
         ttsmapi_client.user_info["current_plan"],
@@ -244,14 +251,14 @@ def ttsfromtemplate_ttsmonster(
             return 1
 
         created_count += 1
+        remaining_files: int = missing_files_total - created_count
 
         logger.info(
-            "Created file %d/~%d: %s. Used: %d/%d chars",
+            "Created file %d/%d: %s (%d remaining)",
             created_count,
-            len(template_data) - created_count - skipped_count + 1,
+            missing_files_total,
             file_fullpath,
-            response["characterUsage"],
-            ttsmapi_client.user_info["character_allowance"],
+            remaining_files,
         )
 
     logger.info(
