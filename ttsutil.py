@@ -8,32 +8,32 @@ from pathlib import Path
 import ffmpeg
 
 poe1_filtersounds_files = {
-    "1": "AlertSound1.mp3",
-    "2": "AlertSound2.mp3",
-    "3": "AlertSound3.mp3",
-    "4": "AlertSound4.mp3",
-    "5": "AlertSound5.mp3",
-    "6": "AlertSound6.mp3",  # Divine tink
-    "7": "AlertSound7.mp3",
-    "8": "AlertSound8.mp3",
-    "9": "AlertSound9.mp3",
-    "10": "AlertSound10.mp3",
-    "11": "AlertSound11.mp3",
-    "12": "AlertSound12.mp3",
-    "13": "AlertSound13.mp3",
-    "14": "AlertSound14.mp3",
-    "15": "AlertSound15.mp3",
-    "16": "AlertSound16.mp3",
-    "ShAlchemy": "AlertSoundShAlchemy.mp3",
-    "ShBlessed": "AlertSoundShBlessed.mp3",
-    "ShChaos": "AlertSoundShChaos.mp3",
-    "ShDivine": "AlertSoundShDivine.mp3",
-    "ShExalted": "AlertSoundShExalted.mp3",
-    "ShFusing": "AlertSoundShFusing.mp3",
-    "ShGeneral": "AlertSoundShGeneral.mp3",
-    "ShMirror": "AlertSoundShMirror.mp3",
-    "ShRegal": "AlertSoundShRegal.mp3",
-    "ShVaal": "AlertSoundShVaal.mp3",
+    "1": "AlertSound_01.wav",  # A tier
+    "2": "AlertSound_02.wav",  # B, C, D, E tier
+    "3": "AlertSound_03.wav",
+    "4": "AlertSound_04.wav",
+    "5": "AlertSound_05.wav",
+    "6": "AlertSound_06.wav",  # S tier / "Divine tink"
+    "7": "AlertSound_07.wav",
+    "8": "AlertSound_08.wav",
+    "9": "AlertSound_09.wav",
+    "10": "AlertSound_10.wav",
+    "11": "AlertSound_11.wav",
+    "12": "AlertSound_12.wav",
+    "13": "AlertSound_13.wav",
+    "14": "AlertSound_14.wav",
+    "15": "AlertSound_15.wav",
+    "16": "AlertSound_16.wav",
+    "ShAlchemy": "SH22Alchemy.wav",
+    "ShBlessed": "SH22Blessed.wav",
+    "ShChaos": "SH22Chaos.wav",
+    "ShDivine": "SH22Divine.wav",
+    "ShExalted": "SH22Exalted.wav",
+    "ShFusing": "SH22Fusing.wav",
+    "ShGeneral": "SH22General.wav",
+    "ShMirror": "SH22Mirror.wav",
+    "ShRegal": "SH22Regal.wav",
+    "ShVaal": "SH22Vaal.wav",
 }
 
 poe1_filtersounds_dir = Path(__file__).parent / "filtersounds"
@@ -120,7 +120,7 @@ def trim_silence(
     return input_stream  # noqa: RET504
 
 
-def mixin_filtersound(input_file: Path, filtersound_id: str) -> tempfile._TemporaryFileWrapper | None:
+def mixin_filtersound(tts_input_file: Path, filtersound_id: str) -> tempfile._TemporaryFileWrapper | None:
     """Mix a specified filtersound from file with an specified AudioStream using ffmpeg amix filter.
 
     You must acquire the filtersound files yourself. They are available in the game files.
@@ -128,29 +128,42 @@ def mixin_filtersound(input_file: Path, filtersound_id: str) -> tempfile._Tempor
     Files are expected to be in poe1_filtersounds_dir relative to this file.
 
     Args:
-        input_file (Path): The input file to mix.
+        tts_input_file (Path): The input file to mix.
         filtersound_id (str): The ID of the filtersound to mix.
 
     Returns:
         tempfile._TemporaryFileWrapper | None: The mixed temporary file, or None if an error occurred.
 
     """
-    if input_file.name.endswith(".pcm"):
+    if tts_input_file.name.endswith(".pcm"):
         # pcm files have no container with metadata, so we need to specify rate, channels, and format
         # Polly PCM output is 16000Hz, 1-channel, 16-bit signed little-endian
-        input_stream: ffmpeg.AudioStream = ffmpeg.input(input_file, ar=16000, ac=1, f="s16le")
+        tts_stream: ffmpeg.AudioStream = ffmpeg.input(tts_input_file, ar=16000, ac=1, f="s16le")
     else:
-        input_stream: ffmpeg.AudioStream = ffmpeg.input(input_file)
+        tts_stream: ffmpeg.AudioStream = ffmpeg.input(tts_input_file)
 
     filtersound_path: Path = poe1_filtersounds_dir / poe1_filtersounds_files[filtersound_id]
     filtersound_stream: ffmpeg.AudioStream = ffmpeg.input(filtersound_path)
 
-    # Trim silence from input since TTSM results are garbage
-    input_stream = trim_silence(input_stream, min_start_duration=0, silence_threshold="-40.0dB")
+    # Trim any silence from input since TTSM results are garbage
+    tts_stream = trim_silence(tts_stream, min_start_duration=0, silence_threshold="-40.0dB")
 
-    mixed_audio: ffmpeg.AudioStream = ffmpeg.filters.amix(
-        filtersound_stream, input_stream, inputs=2, duration="longest"
-    )
+    # # It turned out that ducking did not noticeably improve quality
+    # tts_sidechain_mix = tts_stream.asplit()  # noqa: ERA001
+
+    # # Duck filtersound using TTS sidechain
+    # ducked = filtersound_stream.sidechaincompress(  # noqa: ERA001
+    #     tts_sidechain_mix.audio(0),  # noqa: ERA001
+    #     threshold=0.05,  # noqa: ERA001
+    #     ratio=8,  # noqa: ERA001
+    #     attack=5,  # noqa: ERA001
+    #     release=200,  # noqa: ERA001
+    # )  # noqa: ERA001
+
+    # # Mix ducked filtersound + original TTS
+    # mixed_audio = ffmpeg.filters.amix(ducked, tts_sidechain_mix.audio(1), inputs=2, duration="longest")  # noqa: ERA001
+
+    mixed_audio: ffmpeg.AudioStream = ffmpeg.filters.amix(filtersound_stream, tts_stream, inputs=2, duration="longest")
 
     mixed_file: tempfile._TemporaryFileWrapper = tempfile.NamedTemporaryFile(suffix=(".mp3"), delete=False)  # noqa: SIM115
 

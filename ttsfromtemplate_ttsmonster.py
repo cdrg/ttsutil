@@ -49,7 +49,7 @@ EXTRA_BITS_FOR_SHORT = 1024  # +1KB per character allowance for very short text
 EXTRA_BITS_FOR_MIXIN = 1024  # +1KB per character allowance for mixin applied
 
 
-def ttsfromtemplate_ttsmonster(
+def ttsfromtemplate_ttsmonster(  # noqa: C901, PLR0911, PLR0912, PLR0915
     ttsmapi_client: ttsmapi.Client,
     voice: VoiceIdEnum | str,
     template_file: Path | None = None,
@@ -158,33 +158,38 @@ def ttsfromtemplate_ttsmonster(
             # the need to do two-pass ffmpeg processing. Otherwise ffmpeg could get the file itself.
             try:
                 url_response: requests.Response = requests.get(response["url"], timeout=30)
-                with tempfile.NamedTemporaryFile(suffix=Path(response["url"]).suffix) as f:
-                    f.write(url_response.content)
+                with tempfile.NamedTemporaryFile(suffix=Path(response["url"]).suffix) as downloaded_tempfile:
+                    downloaded_tempfile.write(url_response.content)
+                    audio_tempfile = downloaded_tempfile
 
                     # If mixin sound is specified, use ffmpeg to mix the TTS audio with the specified mixin sound.
-                    # EG: Typically for "divine tink" (sound 6)
+                    # EG: Typically for S tier "divine tink" (sound 6)
                     # Mix first so that following audio adjustments are not affected.
                     if mixin_id:
                         mixed_tempfile: tempfile._TemporaryFileWrapper | None = ttsutil.mixin_filtersound(
-                            Path(f.name), mixin_id
+                            Path(downloaded_tempfile.name), mixin_id
                         )
                         if mixed_tempfile is not None:
-                            Path(f.name).unlink(missing_ok=True)  # cleanup original temp file after mixing
-                            f = mixed_tempfile  # set f to the new mixed tempfile for further processing
+                            Path(downloaded_tempfile.name).unlink(
+                                missing_ok=True
+                            )  # cleanup original temp file after mixing
+                            audio_tempfile = (
+                                mixed_tempfile  # set audio_tempfile to the new mixed tempfile for further processing
+                            )
                         else:
                             logger.error("Failed to mix filtersound for item %s", item)
                             return 1
 
                     # Get the max db of the audio file with ffmpeg volumedetect so we can increase file volume.
                     try:
-                        max_volume: float = ttsutil.get_max_volume(Path(f.name))
+                        max_volume: float = ttsutil.get_max_volume(Path(audio_tempfile.name))
                     except ValueError:
                         logger.exception("Could not determine max volume of audio file")
                         return 1
 
                     # Set ffmpeg input to the tempfile.
                     # ffmpeg will intelligently handle format conversion based on the extension of the output file.
-                    input_stream: ffmpeg.AudioStream = ffmpeg.input(f.name)
+                    input_stream: ffmpeg.AudioStream = ffmpeg.input(audio_tempfile.name)
 
                     # If "prosody rate='fast'" is set in SSML text, simulate that with ffmpeg atempo filter.
                     # AWS Polly SSML rate='fast' is ~150% (1.5) per experiments.
@@ -192,11 +197,12 @@ def ttsfromtemplate_ttsmonster(
                         input_stream = input_stream.atempo(tempo=1.3)
 
                     # Trim silence, since TTS.Monster models are unstable and sometimes emit lengthy silence.
-                    input_stream = ttsutil.trim_silence(
-                        input_stream,
-                        min_start_duration=0,
-                        silence_threshold="-40.0dB",
-                    )
+                    if not mixin_id:  # mixins are already trimmed, trimming again kills quality
+                        input_stream = ttsutil.trim_silence(
+                            input_stream,
+                            min_start_duration=0,
+                            silence_threshold="-40.0dB",
+                        )
 
                     # Files must be as loud as possible to be consistently audible in-game.
                     # If previously determined peak db is less than -0.5db, use ffmpeg volume filter
