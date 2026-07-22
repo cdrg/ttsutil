@@ -54,6 +54,22 @@ def main() -> int:
             print(f"{type(e)}: {e}")
             return 1
 
+    # Check for duplicate entries in the template file
+    duplicate_entry: bool = False
+    seen_paths: set[str] = set()
+    for item in template:
+        dup_entry_path: str | None = item.get("path")
+        if dup_entry_path in seen_paths:
+            duplicate_entry = True
+            print(f"Warning: Duplicate template entry '{dup_entry_path}' found in {args.file}")
+        elif dup_entry_path is not None:
+            seen_paths.add(dup_entry_path)
+
+    if duplicate_entry:
+        print("One or more duplicate entries were found in the template file.")
+        if input("Continue anyway? y/n: ").strip().lower() != "y":
+            return 1
+
     soundpackdirs: list[str] = [p.name for p in inputdir.iterdir() if p.is_dir() and (p / "sounds").is_dir()]
 
     # Check if all files in the template exist in each soundpack directory
@@ -102,6 +118,11 @@ def main() -> int:
             return 1
     else:
         print("Successful check: All .mp3 files in soundpack directories exist in template file.")
+
+    # Cleanup old existing .zip and .mp4 files in output directory
+    for existing_file in outputdir.iterdir():
+        if existing_file.suffix.lower() in {".zip", ".mp4"} and existing_file.is_file():
+            existing_file.unlink()
 
     # Generate release files
     for soundpackdir in soundpackdirs:
