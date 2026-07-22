@@ -20,8 +20,6 @@ import ttsmapi
 from boto3 import Session
 from botocore.exceptions import ClientError, NoCredentialsError
 from mypy_boto3_polly.literals import VoiceIdType  # noqa: TC002
-
-# from mypy_boto3_service_quotas.type_defs import ListServiceQuotasResponseTypeDef  # noqa: TC002
 from requests import HTTPError, JSONDecodeError
 from ttsmapi.exceptions import TTSMAPIError
 
@@ -30,9 +28,10 @@ import ttsfromtemplate_ttsmonster
 
 logger = logging.getLogger(__name__)
 
+AWSPOLLY_STANDARD_COST_PER_CHAR_USD = 4 / 1_000_000
+
 if TYPE_CHECKING:
     from mypy_boto3_polly.client import PollyClient
-    # from mypy_boto3_service_quotas.client import ServiceQuotasClient
 
 
 def _count_missing_for_service(
@@ -64,7 +63,7 @@ def _count_missing_for_service(
     return dirs, num_missing_files, num_missing_chars
 
 
-def update_all_soundpacks(
+def update_all_soundpacks(  # noqa: C901, PLR0911, PLR0912, PLR0915
     template_file: Path | None = None,
     base_dir: Path | None = None,
     *,
@@ -80,6 +79,8 @@ def update_all_soundpacks(
         base_dir (Path, optional): Directory containing soundpack subdirectories.
             Defaults to current working directory.
         log_missing (bool, optional): If True, log each missing TTS file path. Default False.
+        quality_checks (bool, optional): If True, perform quality checks. Default True.
+        enforce_char_quota (bool, optional): If True, enforce character quota limits. Default True.
 
     Returns:
         int: 0 on success, 1 on error
@@ -120,12 +121,8 @@ def update_all_soundpacks(
             logger.exception("Failed to initialize AWS Polly client")
             return 1
 
-        # TODO(cdr): Figure out how to actually get the SynthesizeSpeech quota(s) from AWS Polly
-        # service_quotas_client: ServiceQuotasClient = Session(profile_name=aws_profile).client('service-quotas')  # type: ignore[attr-defined]
-        # service_quotas: ListServiceQuotasResponseTypeDef = service_quotas_client.list_service_quotas(ServiceCode='polly')
-        # synthesize_speech_quota = next((quota for quota in service_quotas['Quotas'] if quota['QuotaName'] == "SynthesizeSpeech"), None)  # type: ignore
-
-        # logger.info("AWS Polly account has %s characters remaining in this billing period.", synthesize_speech_quota)
+        awspolly_estimated_cost: float = awspolly_num_missing_chars * AWSPOLLY_STANDARD_COST_PER_CHAR_USD
+        logger.info("Estimated AWSPolly standard voice cost: $%f USD", awspolly_estimated_cost)
 
     # Calculate the total number of characters of 'tts_text' for missing files in all TTSM soundpacks
     ttsm_dirs, ttsm_num_missing_files, ttsm_num_missing_chars = _count_missing_for_service(
@@ -180,7 +177,7 @@ def update_all_soundpacks(
                 continue
             logger.info("Creating TTS files in soundpack folder '%s'...", soundpack_dir.name)
             retcode: int = ttsfromtemplate_awspolly.ttsfromtemplate_awspolly(
-                polly_client=polly_client,  # type: ignore
+                polly_client=polly_client,  # type: ignore[arg-type]
                 voiceid=cast("VoiceIdType", voice),
                 template_file=template_file,
                 output_dir=soundpack_dir,
@@ -197,7 +194,7 @@ def update_all_soundpacks(
                 continue
             logger.info("Creating TTS files in soundpack folder '%s'...", soundpack_dir.name)
             retcode: int = ttsfromtemplate_ttsmonster.ttsfromtemplate_ttsmonster(
-                ttsmapi_client=ttsmapi_client,  # type: ignore
+                ttsmapi_client=ttsmapi_client,  # type: ignore[arg-type]
                 voice=voice,
                 template_file=template_file,
                 output_dir=soundpack_dir,

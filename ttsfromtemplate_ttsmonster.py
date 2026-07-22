@@ -49,7 +49,7 @@ EXTRA_BITS_FOR_SHORT = 1024  # +1KB per character allowance for very short text
 EXTRA_BITS_FOR_MIXIN = 1024  # +1KB per character allowance for mixin applied
 
 
-def ttsfromtemplate_ttsmonster(  # noqa: C901, PLR0911, PLR0912, PLR0915
+def ttsfromtemplate_ttsmonster(
     ttsmapi_client: ttsmapi.Client,
     voice: VoiceIdEnum | str,
     template_file: Path | None = None,

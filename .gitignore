@@ -2,3 +2,6 @@ scripts/.venv
 __pycache__
 .vscode
 filtersounds
+
+AGENTS.md
+docs/agents/*

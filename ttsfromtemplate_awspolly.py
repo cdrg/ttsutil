@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def ttsfromtemplate_awspolly(
+def ttsfromtemplate_awspolly(  # noqa: PLR0913
     polly_client: PollyClient,
     voiceid: VoiceIdType,
     template_file: Path | None = None,
@@ -133,6 +133,7 @@ def ttsfromtemplate_awspolly(
             file_fullpath.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
 
         # if SSML text exists, set texttype to ssml and use ssml text instead of plain tts text
+        # all Polly voices should support basic SSML
         if ssml_text:
             texttype: str = "ssml"
             tts_text: str = ssml_text
@@ -152,7 +153,7 @@ def ttsfromtemplate_awspolly(
             synth_speech_kwargs["LanguageCode"] = languagecode
 
         try:
-            response: SynthesizeSpeechOutputTypeDef = polly_client.synthesize_speech(**synth_speech_kwargs)  # type: ignore
+            response: SynthesizeSpeechOutputTypeDef = polly_client.synthesize_speech(**synth_speech_kwargs)  # type: ignore[arg-type]
         # if SSML is invalid, log and continue with next item
         except polly_client.exceptions.InvalidSsmlException:
             logger.exception("Invalid SSML for template item: %s", item)
@@ -215,28 +216,12 @@ def ttsfromtemplate_awspolly(
         else:
             input_stream: ffmpeg.AudioStream = ffmpeg.input(f.name)
 
-        if mixin_id:
-            # Trim silence. Not usually necessary for AWS Polly output, but mixin filtersound files can introduce silence.
-            # -40.0db instead of -30.0db threshold to minimize clipping at the end of divine tink.
-            input_stream = ttsutil.trim_silence(
-                input_stream,
-                min_start_duration=0,
-                silence_threshold="-40.0dB",
-            )
-
-        # TODO: set speech speed to hit a specific total audio duration, instead of guessing?
-        # TODO: Check if selected AWS Polly voice supports SSML? Currently only using SSML voices.
-        # If "prosody rate='fast'" is set in SSML text, simulate that with ffmpeg atempo filter.
-        # AWS Polly SSML rate='fast' is ~150% (1.5) per experiments.
-        # if "rate='fast'" in ssml_text:
-        #    input_stream = input_stream.atempo(tempo=1.3)
-
         # Files must be as loud as possible to be consistently audible in-game.
         # If previously determined peak db is less than -0.5db, use ffmpeg volume filter
         # to increase the file volume by the same amount, resulting in -0.5db peak.
         # Unfortunately, other ffmpeg filters such as loudnorm or dynaudnorm do not
         # work well for our purposes, so we have to do this two-pass method.
-        if input_max_volume < -0.5:
+        if input_max_volume < -0.5:  # noqa: PLR2004
             volume_adjustment: float = -input_max_volume - 0.5  # -0.5dB for clipping safety
             input_stream = input_stream.volume(volume=f"{volume_adjustment}dB")
 
@@ -325,7 +310,7 @@ def main() -> int:
         return 1
 
     try:
-        polly_client: PollyClient = Session(profile_name=aws_profile).client("polly")  # type: ignore
+        polly_client: PollyClient = Session(profile_name=aws_profile).client("polly")  # type: ignore[return-value]
     except (ClientError, NoCredentialsError):
         logger.exception("Failed to initialize AWS Polly client")
         return 1
