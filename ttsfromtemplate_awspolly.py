@@ -117,6 +117,7 @@ def ttsfromtemplate_awspolly(  # noqa: PLR0913
         if not file_fullpath.exists():
             existing_paths.add(file_fullpath)
     missing_files_total: int = len(existing_paths)
+    logger.info("Total missing files to create: %d", missing_files_total)
 
     created_count: int = 0
     skipped_count: int = 0
@@ -250,14 +251,12 @@ def ttsfromtemplate_awspolly(  # noqa: PLR0913
         Path(f.name).unlink(missing_ok=True)
 
         created_count += 1
-        remaining_files: int = missing_files_total - created_count
 
         logger.info(
-            "Created file %d/%d: %s (%d remaining)",
+            "Created file %d/%d: %s",
             created_count,
             missing_files_total,
             file_fullpath,
-            remaining_files,
         )
 
     logger.info(
